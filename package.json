@@ -451,7 +451,11 @@
 				},
 				"githubPullRequests.createDefaultBaseBranch": {
 					"type": "string",
-					"enum": ["repositoryDefault", "createdFromBranch", "auto"],
+					"enum": [
+						"repositoryDefault",
+						"createdFromBranch",
+						"auto"
+					],
 					"markdownEnumDescriptions": [
 						"%githubPullRequests.createDefaultBaseBranch.repositoryDefault%",
 						"%githubPullRequests.createDefaultBaseBranch.createdFromBranch%",
@@ -616,7 +620,9 @@
 						{
 							"label": "%githubIssues.queries.default.myIssues%",
 							"query": "is:open assignee:${user} repo:${owner}/${repository}",
-							"groupBy": ["milestone"]
+							"groupBy": [
+								"milestone"
+							]
 						},
 						{
 							"label": "%githubIssues.queries.default.createdIssues%",
@@ -3742,8 +3748,8 @@
 		"@types/marked": "^0.7.2",
 		"@types/mocha": "^8.2.2",
 		"@types/node": "18.17.1",
-		"@types/react": "^16.8.4",
-		"@types/react-dom": "^16.8.2",
+		"@types/react": "^16.14.62",
+		"@types/react-dom": "^16.9.25",
 		"@types/sinon": "7.0.11",
 		"@types/temp": "0.8.34",
 		"@types/vscode": "1.89.0",
