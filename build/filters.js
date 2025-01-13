@@ -28,6 +28,14 @@ module.exports.unicodeFilter = [
 	'!**/ThirdPartyNotices.txt',
 	'!**/LICENSE.{txt,rtf}',
 	'!**/LICENSE',
+	// exclude binary files
+	'!**/*.png',
+	'!**/*.jpg',
+	'!**/*.jpeg',
+	'!**/*.gif',
+	'!**/*.ico',
+	'!**/*.binary',
+	'!**/*.bin',
 	'!*.yml',
 	'!resources/emojis.json'
 ];

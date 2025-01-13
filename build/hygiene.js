@@ -27,6 +27,10 @@ function hygiene(some) {
 	let errorCount = 0;
 
 	const unicode = es.through(function (file) {
+		if (!file || !file.contents) {
+			this.emit('data', file);
+			return;
+		}
 		const lines = file.contents.toString('utf8').split(/\r\n|\r|\n/);
 		file.__lines = lines;
 
@@ -54,6 +58,10 @@ function hygiene(some) {
 	});
 
 	const indentation = es.through(function (file) {
+		if (!file || !file.__lines) {
+			this.emit('data', file);
+			return;
+		}
 		const lines = file.__lines;
 
 		lines.forEach((line, i) => {
@@ -77,6 +85,10 @@ function hygiene(some) {
 	});
 
 	const copyrights = es.through(function (file) {
+		if (!file || !file.__lines) {
+			this.emit('data', file);
+			return;
+		}
 		const lines = file.__lines;
 
 		for (let i = 0; i < copyrightHeaderLines.length; i++) {
@@ -91,6 +103,10 @@ function hygiene(some) {
 	});
 
 	const formatting = es.map(function (file, cb) {
+		if (!file || !file.contents) {
+			cb(null, file);
+			return;
+		}
 		tsfmt
 			.processString(file.path, file.contents.toString('utf8'), {
 				verify: false,
