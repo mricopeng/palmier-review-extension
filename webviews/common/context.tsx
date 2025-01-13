@@ -133,6 +133,20 @@ export class PRContext {
 	public submit = async (body: string) =>
 		this.appendReview(await this.postMessage({ command: 'pr.submit', args: body }));
 
+	public generateAISummary = async () => {
+		console.log('[AI Summary Context] Starting generateAISummary');
+		console.log('[AI Summary Context] Current PR state:', this.pr);
+		try {
+			console.log('[AI Summary Context] Sending postMessage with command pr.generate-ai-summary');
+			const result = await this.postMessage({ command: 'pr.generate-ai-summary' });
+			console.log('[AI Summary Context] Received result:', result);
+			return result;
+		} catch (error) {
+			console.error('[AI Summary Context] Error in generateAISummary:', error);
+			throw error;
+		}
+	};
+
 	public close = async (body?: string) => {
 		try {
 			const result = await this.postMessage({ command: 'pr.close', args: body });
@@ -164,15 +178,27 @@ export class PRContext {
 			this.updatePR(state);
 			return;
 		}
-		const events = state.events.filter(e => e.event !== EventType.Reviewed || e.state.toLowerCase() !== 'pending');
+		const events = state.events.filter(e => {
+			if (e.event !== EventType.Reviewed) {
+				return true;
+			}
+			return e.state?.toLowerCase() !== 'pending';
+		});
 		events.forEach(event => {
 			if (event.event === EventType.Reviewed) {
 				event.comments.forEach(c => (c.isDraft = false));
 			}
 		});
 		state.reviewers = reviewers;
-		state.events = [...state.events.filter(e => (e.event === EventType.Reviewed ? e.state !== 'PENDING' : e)), review];
-		state.currentUserReviewState = review.state;
+		state.events = [...state.events.filter(e => {
+			if (e.event !== EventType.Reviewed) {
+				return true;
+			}
+			return e.state !== 'PENDING';
+		}), review];
+		if (review.state) {
+			state.currentUserReviewState = review.state;
+		}
 		state.pendingCommentText = '';
 		state.pendingReviewType = undefined;
 		this.updatePR(state);

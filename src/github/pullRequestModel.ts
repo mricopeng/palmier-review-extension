@@ -2004,4 +2004,14 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			unviewed: this._unviewedFiles
 		};
 	}
+
+	async updateDescription(body: string): Promise<void> {
+		const { octokit, remote } = await this.githubRepository.ensure();
+		await octokit.call(octokit.api.pulls.update, {
+			owner: remote.owner,
+			repo: remote.repositoryName,
+			pull_number: this.number,
+			body
+		});
+	}
 }

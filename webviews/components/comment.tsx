@@ -13,10 +13,11 @@ import PullRequestContext from '../common/context';
 import emitter from '../common/events';
 import { useStateProp } from '../common/hooks';
 import { ContextDropdown } from './contextDropdown';
-import { commentIcon, deleteIcon, editIcon } from './icon';
+import { commentIcon, deleteIcon, editIcon, sparkleIcon } from './icon';
 import { nbsp, Spaced } from './space';
 import { Timestamp } from './timestamp';
 import { AuthorLink, Avatar } from './user';
+import { vscode } from '../common/message';
 
 export type Props = {
 	headerInEditMode?: boolean;
@@ -33,6 +34,14 @@ const association = ({ authorAssociation }: ReviewEvent, format = (assoc: string
 			? format(authorAssociation)
 			: null;
 
+const PopupMessage = ({ message, onClose }: { message: string; onClose: () => void }) => (
+	<div className="popup-overlay" onClick={onClose}>
+		<div className="popup-content" onClick={e => e.stopPropagation()}>
+			{message}
+		</div>
+	</div>
+);
+
 export function CommentView(commentProps: Props) {
 	const { isPRDescription, children, comment, headerInEditMode } = commentProps;
 	const { bodyHTML, body } = comment;
@@ -43,10 +52,12 @@ export function CommentView(commentProps: Props) {
 	const pullRequestReviewId = (comment as IComment).pullRequestReviewId;
 	const [bodyMd, setBodyMd] = useStateProp(body);
 	const [bodyHTMLState, setBodyHtml] = useStateProp(bodyHTML);
-	const { deleteComment, editComment, setDescription, pr } = useContext(PullRequestContext);
+	const context = useContext(PullRequestContext);
+	const { deleteComment, editComment, setDescription, pr } = context;
 	const currentDraft = pr.pendingCommentDrafts && pr.pendingCommentDrafts[id];
 	const [inEditMode, setEditMode] = useState(!!currentDraft);
 	const [showActionBar, setShowActionBar] = useState(false);
+	const [showPopup, setShowPopup] = useState(false);
 
 	if (inEditMode) {
 		return React.cloneElement(headerInEditMode ? <CommentBox for={comment} /> : <></>, {}, [
@@ -88,6 +99,46 @@ export function CommentView(commentProps: Props) {
 		>
 			{ariaAnnouncement ? <div role='alert' aria-label={ariaAnnouncement}/> : null}
 			<div className="action-bar comment-actions" style={{ display: showActionBar ? 'flex' : 'none' }}>
+				{isPRDescription && (
+					<>
+						<button
+							title="Generate AI Summary"
+							className="icon-button"
+							onClick={async () => {
+								console.log('[AI Summary] Button clicked');
+								setShowPopup(true);
+								try {
+									console.log('[AI Summary] Calling generateAISummary...');
+									console.log('[AI Summary] Current context state:', context.pr);
+									const result = await context.generateAISummary();
+									console.log('[AI Summary] Result received:', result);
+									if (result?.summary) {
+										console.log('[AI Summary] Setting description with summary');
+										await context.setDescription(result.summary);
+										console.log('[AI Summary] Description updated successfully');
+									} else {
+										console.log('[AI Summary] No summary in result:', result);
+										throw new Error('No summary generated');
+									}
+								} catch (error) {
+									console.error('[AI Summary] Error:', error);
+									vscode.window.showErrorMessage(`Failed to generate AI summary: ${error instanceof Error ? error.message : 'Unknown error'}`);
+								} finally {
+									console.log('[AI Summary] Cleaning up - hiding popup');
+									setShowPopup(false);
+								}
+							}}
+						>
+							{sparkleIcon}
+						</button>
+						{showPopup && (
+							<PopupMessage
+								message="Generating AI summary..."
+								onClose={() => setShowPopup(false)}
+							/>
+						)}
+					</>
+				)}
 				<button
 					title="Quote reply"
 					className="icon-button"

@@ -5,30 +5,31 @@
 
 'use strict';
 import TelemetryReporter from '@vscode/extension-telemetry';
+import axios, { isAxiosError } from 'axios';
 import * as vscode from 'vscode';
 import { LiveShare } from 'vsls/vscode.js';
 import { PostCommitCommandsProvider, Repository } from './api/api';
 import { GitApiImpl } from './api/api1';
-import { registerCommands } from './commands';
+import { registerCommands as registerCommandsFromModule } from './commands';
 import { commands } from './common/executeCommands';
+import { GitChangeType } from './common/file';
 import Logger from './common/logger';
 import * as PersistentState from './common/persistentState';
 import { parseRepositoryRemotes } from './common/remote';
 import { Resource } from './common/resources';
-import { BRANCH_PUBLISH, EXPERIMENTAL_CHAT, EXPERIMENTAL_NOTIFICATIONS, FILE_LIST_LAYOUT, GIT, OPEN_DIFF_ON_CLICK, PR_SETTINGS_NAMESPACE, SHOW_INLINE_OPEN_FILE_ACTION } from './common/settingKeys';
+import { BRANCH_PUBLISH, EXPERIMENTAL_NOTIFICATIONS, FILE_LIST_LAYOUT, GIT, OPEN_DIFF_ON_CLICK, PR_SETTINGS_NAMESPACE, SHOW_INLINE_OPEN_FILE_ACTION } from './common/settingKeys';
 import { TemporaryState } from './common/temporaryState';
 import { Schemes, handler as uriHandler } from './common/uri';
 import { EXTENSION_ID, FOCUS_REVIEW_MODE } from './constants';
 import { createExperimentationService, ExperimentationTelemetry } from './experimentationService';
 import { CredentialStore } from './github/credentials';
 import { FolderRepositoryManager } from './github/folderRepositoryManager';
+import { PullRequestModel } from './github/pullRequestModel';
 import { RepositoriesManager } from './github/repositoriesManager';
 import { registerBuiltinGitProvider, registerLiveShareGitProvider } from './gitProviders/api';
 import { GitHubContactServiceProvider } from './gitProviders/GitHubContactServiceProvider';
 import { GitLensIntegration } from './integrations/gitlens/gitlensImpl';
 import { IssueFeatureRegistrar } from './issues/issueFeatureRegistrar';
-import { ChatParticipant, ChatParticipantState } from './lm/participants';
-import { registerTools } from './lm/tools/tools';
 import { migrate } from './migrations';
 import { NotificationsFeatureRegister } from './notifications/notificationsFeatureRegistar';
 import { CommentDecorationProvider } from './view/commentDecorationProvider';
@@ -44,7 +45,41 @@ import { ReviewsManager } from './view/reviewsManager';
 import { TreeDecorationProviders } from './view/treeDecorationProviders';
 import { WebviewViewCoordinator } from './view/webviewViewCoordinator';
 
-const ingestionKey = '0c6ae279ed8443289764825290e4f9e2-1a736e7c-1324-4338-be46-fc2a58ae4d14-7255';
+const ingestionKey = process.env.TELEMETRY_INGESTION_KEY || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// Configuration for AI summary generation
+const AI_CONFIG = {
+	model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
+	maxTokens: process.env.ANTHROPIC_MAX_TOKENS ? parseInt(process.env.ANTHROPIC_MAX_TOKENS) : 4096,
+	apiVersion: process.env.ANTHROPIC_API_VERSION || '2023-06-01',
+	timeout: process.env.ANTHROPIC_TIMEOUT ? parseInt(process.env.ANTHROPIC_TIMEOUT) : 30000,
+	endpoint: process.env.ANTHROPIC_API_ENDPOINT || 'https://api.anthropic.com/v1/messages'
+};
+
+// Move prompt template to a separate file or load from configuration
+const PR_SUMMARY_PROMPT = process.env.PR_SUMMARY_PROMPT || `You are a specialized pull request analyzer tasked with examining the provided diff and creating a concise yet sufficiently detailed summary of the changes.
+
+Your goal is to help a reviewer understand the changes in a pull request as quickly as possible whilst still knowing all the details.
+
+Your output requirements:
+1. Begin with a 2-3 line high-level summary capturing the overall impact of the pull request.
+2. Group and describe related changes from highest to lowest impact, but feel free to vary the structure as appropriate. For example:
+- Title, a brief summary of the change, then each file reference and explanation.
+- Title, then file references with short explanations after each file.
+- Title, summary, files grouped together, followed by a collective explanation.
+3. Regardless of the structure, file references MUST be formatted as:
+full/path/to/file (lines x-y)
+It is IMPERATIVE that you the full path to the file is the FULL path to the file with no abbreviations, exactly as shown in the diff.
+If you are refering to a whole directory, use the full path to the directory, e.g. full/path/to/directory/
+4. Provide concise but sufficiently descriptive explanations (1-3 lines each) focusing on what changed, why, and how it affects the application.
+5. Output only your final summary in valid Markdown - no extra remarks or disclaimers.
+
+Guidelines on level of detail:
+* If the PR introduces new components or APIs, briefly describe their purpose.
+* If refactoring, mention the reason (performance, code organization, bug fixes) and the key benefit.
+* If adding error handling or UI enhancements, note the user-facing or developer-facing benefits.
+* Keep each explanation short, but ensure it offers enough context for reviewers.`;
 
 let telemetry: ExperimentationTelemetry;
 
@@ -211,6 +246,7 @@ async function init(
 
 	context.subscriptions.push(new PRNotificationDecorationProvider(tree.notificationProvider));
 
+	registerCommandsFromModule(context, reposManager, reviewsManager, telemetry, tree);
 	registerCommands(context, reposManager, reviewsManager, telemetry, tree);
 
 	const layout = vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<string>(FILE_LIST_LAYOUT);
@@ -232,8 +268,6 @@ async function init(
 
 	registerPostCommitCommandsProvider(reposManager, git);
 
-	initChat(context, credentialStore, reposManager);
-
 	// Make sure any compare changes tabs, which come from the create flow, are closed.
 	CompareChanges.closeTabs();
 	/* __GDPR__
@@ -242,26 +276,86 @@ async function init(
 	telemetry.sendTelemetryEvent('startup');
 }
 
-function initChat(context: vscode.ExtensionContext, credentialStore: CredentialStore, reposManager: RepositoriesManager) {
-	const createParticipant = () => {
-		const chatParticipantState = new ChatParticipantState();
-		context.subscriptions.push(new ChatParticipant(context, chatParticipantState));
-		registerTools(context, credentialStore, reposManager, chatParticipantState);
-	};
+function buildPrompt(content: { title: string; description: string; files: { fileName: string; status: string }[]; commits: string[] }): string {
+	return `${PR_SUMMARY_PROMPT}
 
-	const chatEnabled = () => vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<boolean>(EXPERIMENTAL_CHAT, false);
-	if (chatEnabled()) {
-		createParticipant();
-	} else {
-		const disposable = vscode.workspace.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(`${PR_SETTINGS_NAMESPACE}.${EXPERIMENTAL_CHAT}`)) {
-				if (chatEnabled()) {
-					disposable.dispose();
-					createParticipant();
-				}
-			}
+Here is the pull request information:
+Title: ${content.title}
+Original Description: ${content.description}
+
+Files Changed:
+${content.files.map(f => `- ${f.fileName} (${f.status})`).join('\n')}
+
+Commit Messages:
+${content.commits.join('\n')}
+
+Start with your 2-3 line summary, then each section describing changes. Do not include any introductions or conclusions.`;
+}
+
+export async function generateAISummary(pullRequestModel: PullRequestModel): Promise<{ summary: string }> {
+	const componentName = 'AI Summary Generator';
+	Logger.debug('Starting AI summary generation', componentName);
+
+	try {
+		if (!ANTHROPIC_API_KEY || ANTHROPIC_API_KEY === 'YOUR_ANTHROPIC_API_KEY') {
+			throw new Error('Anthropic API key not configured. Please set the ANTHROPIC_API_KEY environment variable.');
+		}
+
+		// Gather PR data
+		const [commits, description, title] = await Promise.all([
+			pullRequestModel.getCommits(),
+			pullRequestModel.body || '',
+			pullRequestModel.title
+		]);
+		await pullRequestModel.getFileChangesInfo();
+		const fileChanges = Array.from(pullRequestModel.fileChanges.values());
+
+		// Format content for prompt
+		const content = {
+			title,
+			description,
+			commits: commits.map(c => c.commit.message),
+			files: fileChanges.map(f => ({
+				fileName: f.fileName,
+				status: GitChangeType[f.status]
+			}))
+		};
+
+		const prompt = buildPrompt(content);
+
+		// Make API request
+		Logger.debug('Making API request to Claude', componentName);
+		const response = await axios.post(AI_CONFIG.endpoint, {
+			model: AI_CONFIG.model,
+			max_tokens: AI_CONFIG.maxTokens,
+			messages: [{
+				role: 'user',
+				content: prompt
+			}]
+		}, {
+			headers: {
+				'x-api-key': ANTHROPIC_API_KEY,
+				'anthropic-version': AI_CONFIG.apiVersion,
+				'content-type': 'application/json'
+			},
+			timeout: AI_CONFIG.timeout
 		});
-		context.subscriptions.push(disposable);
+
+		if (!response.data.content || !response.data.content[0] || !response.data.content[0].text) {
+			throw new Error('Invalid response format from Anthropic API');
+		}
+
+		const summary = response.data.content[0].text;
+		Logger.debug('Successfully generated summary', componentName);
+		return { summary };
+	} catch (error) {
+		if (isAxiosError(error)) {
+			const errorMessage = error.response?.data?.error?.message || error.message;
+			Logger.error(`Failed to generate AI summary: ${error.message}. Status: ${error.response?.status}. Error: ${errorMessage}`, componentName);
+			throw new Error(`API request failed: ${errorMessage}`);
+		}
+		Logger.error(`Failed to generate AI summary: ${error}`, componentName);
+		throw error;
 	}
 }
 
@@ -437,4 +531,37 @@ export async function deactivate() {
 	if (telemetry) {
 		telemetry.dispose();
 	}
+}
+
+async function registerCommands(
+	context: vscode.ExtensionContext,
+	reposManager: RepositoriesManager,
+	_reviewsManager: ReviewsManager,
+	_telemetry: ExperimentationTelemetry,
+	_tree: PullRequestsTreeDataProvider,
+) {
+	context.subscriptions.push(
+		vscode.commands.registerCommand('pr.generate-ai-summary', async () => {
+			try {
+				await vscode.commands.executeCommand('github-pr.focus.output');
+				Logger.debug('Starting AI summary generation', 'Command Handler');
+
+				const activePullRequests = reposManager.folderManagers
+					.map(manager => manager.activePullRequest)
+					.filter((pr): pr is PullRequestModel => pr !== undefined);
+
+				if (activePullRequests.length === 0) {
+					throw new Error('No active pull request found');
+				}
+
+				const pr = activePullRequests[0];
+				const summary = await generateAISummary(pr);
+				return { summary };
+			} catch (e) {
+				Logger.error(`Failed to generate AI summary: ${e}`, 'Command Handler');
+				vscode.window.showErrorMessage(`Failed to generate AI summary: ${e}`);
+				return undefined;
+			}
+		})
+	);
 }

@@ -15,6 +15,7 @@ import { ITelemetry } from '../common/telemetry';
 import { ReviewEvent as CommonReviewEvent } from '../common/timelineEvent';
 import { asPromise, formatError } from '../common/utils';
 import { IRequestMessage, PULL_REQUEST_OVERVIEW_VIEW_TYPE } from '../common/webview';
+import { generateAISummary } from '../extension';
 import { FolderRepositoryManager } from './folderRepositoryManager';
 import {
 	GithubItemStateEnum,
@@ -350,6 +351,24 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 			return;
 		}
 		switch (message.command) {
+			case 'pr.generate-ai-summary':
+				Logger.debug('Received pr.generate-ai-summary command', PullRequestOverviewPanel.ID);
+				try {
+					const result = await generateAISummary(this._item);
+					Logger.debug('AI summary generated successfully', PullRequestOverviewPanel.ID);
+					Logger.debug(`Summary length: ${result.summary.length} chars`, PullRequestOverviewPanel.ID);
+
+					// Update the PR description with the generated summary
+					await this._item.updateDescription(result.summary);
+
+					// Refresh the PR to get the updated description
+					await this.updatePullRequest(this._item);
+
+					return this._replyMessage(message, result);
+				} catch (error) {
+					Logger.error(`Failed to generate AI summary: ${error}`, PullRequestOverviewPanel.ID);
+					return this._throwError(message, `Failed to generate AI summary: ${error}`);
+				}
 			case 'pr.checkout':
 				return this.checkoutPullRequest(message);
 			case 'pr.merge':
